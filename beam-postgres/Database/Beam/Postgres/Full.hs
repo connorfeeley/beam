@@ -23,7 +23,7 @@ module Database.Beam.Postgres.Full
   , lateral_
 
   -- * @INSERT@ and @INSERT RETURNING@
-  , insert, insertReturning
+  , insert, insertOnlyReturning, insertReturning
   , insertDefaults
   , runPgInsertReturningList
 
@@ -63,6 +63,7 @@ import           Database.Beam.Postgres.Types
 import           Database.Beam.Postgres.Syntax
 
 import           Control.Monad.Free.Church
+import           Control.Monad.Writer (execWriter, tell)
 
 import           Data.Proxy (Proxy(..))
 import qualified Data.Text as T
@@ -175,6 +176,42 @@ insert tbl@(DatabaseEntity dt@(DatabaseTable {})) values onConflict_ =
     PgInsertReturningEmpty ->
       SqlInsertNoRows
 
+
+insertOnlyReturning :: (ProjectibleWithPredicate AnyType () T.Text (QExprToField r))
+                    => Projectible Postgres a
+                    => DatabaseEntity Postgres be (TableEntity table)
+                    -> (table (QField s) -> QExprToField r)
+                    -> SqlInsertValues Postgres r
+                    -> PgInsertOnConflict table
+                    -> Maybe (table (QExpr Postgres PostgresInaccessible) -> a)
+                    -> PgInsertReturning (QExprToIdentity a)
+insertOnlyReturning _ _ SqlInsertValuesEmpty _ _ = PgInsertReturningEmpty
+insertOnlyReturning (DatabaseEntity tbl@(DatabaseTable {}))
+                    mkProj
+                    (SqlInsertValues vs)
+                    (PgInsertOnConflict mkOnConflict)
+                    mMkProjection =
+  PgInsertReturning $
+  insertOnlyStmt proj vs <> emit " " <>
+  fromPgInsertOnConflict (mkOnConflict tblFields) <>
+  (case mMkProjection of
+     Nothing -> mempty
+     Just mkProjection ->
+         emit " RETURNING " <>
+         pgSepBy (emit ", ") (fromPgExpression <$> project (Proxy @Postgres) (mkProjection tblQ) "t"))
+   where
+     tblSettings = dbTableSettings tbl
+     proj = execWriter (project' (Proxy @AnyType) (Proxy @((), T.Text))
+                                 (\_ _ f -> tell [f] >> pure f)
+                                 (mkProj tblFields))
+     tblQ = changeBeamRep (\(Columnar' f) -> Columnar' (QExpr (\_ -> fieldE (qualifiedField (dbTableCurrentName tbl) (_fieldName f))))) tblSettings
+     -- Use 'QField True'; otherwise using 'current_' generates an unqualified (ambiguous) column name in 'UPDATE SET'.
+     tblFields = changeBeamRep (\(Columnar' f) -> Columnar' (QField True (dbTableCurrentName tbl) (_fieldName f))) tblSettings
+     insertOnlyStmt fields values =
+         emit "INSERT INTO " <> fromPgTableName (tableName (dbTableSchema tbl) (dbTableCurrentName tbl)) <>
+         pgParens (pgSepBy (emit ", ") (map pgQuotedIdentifier fields)) <> emit " " <>
+         fromPgInsertValues values
+
 -- | The most general kind of @INSERT@ that postgres can perform
 data PgInsertReturning a
   = PgInsertReturning PgSyntax
@@ -230,7 +267,7 @@ runPgInsertReturningList = \case
 -- | What to do when an @INSERT@ statement inserts a row into the table @tbl@
 -- that violates a constraint.
 newtype PgInsertOnConflict (tbl :: (* -> *) -> *) =
-    PgInsertOnConflict (tbl (QField QInternal) -> PgInsertOnConflictSyntax)
+    PgInsertOnConflict (forall s. tbl (QField s) -> PgInsertOnConflictSyntax)
 
 -- | Postgres @LATERAL JOIN@ support
 --
@@ -442,9 +479,19 @@ instance BeamHasInsertOnConflict Postgres where
   newtype SqlConflictTarget Postgres table =
     PgInsertOnConflictTarget (table (QExpr Postgres QInternal) -> PgInsertOnConflictTargetSyntax)
   newtype SqlConflictAction Postgres table =
-    PgConflictAction (table (QField QInternal) -> PgConflictActionSyntax)
+    PgConflictAction (forall s. table (QField s) -> PgConflictActionSyntax)
 
   insertOnConflict tbl vs target action = insert tbl vs $ onConflict target action
+
+  insertOnlyOnConflict _ _ SqlInsertValuesEmpty _ _ = SqlInsertNoRows
+  insertOnlyOnConflict tbl@(DatabaseEntity dt@(DatabaseTable {})) mkProj vs target action =
+      -- SqlInsert (dbTableSettings dt) (insertStmt (tableNameFromEntity dt) proj vs)
+      case insertOnlyReturning tbl mkProj vs (onConflict target action)
+             (Nothing :: Maybe (table (QExpr Postgres PostgresInaccessible) -> QExpr Postgres PostgresInaccessible Int)) of
+        PgInsertReturning a ->
+          SqlInsert (dbTableSettings dt) (PgInsertSyntax a)
+        PgInsertReturningEmpty ->
+          SqlInsertNoRows
 
   -- | Perform the conflict action when any constraint or index conflict occurs.
   -- Syntactically, this is the @ON CONFLICT@ clause, without any /conflict target/.
