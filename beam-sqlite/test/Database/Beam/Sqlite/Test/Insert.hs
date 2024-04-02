@@ -18,6 +18,7 @@ tests = testGroup "Insertion tests"
   [ testInsertReturningColumnOrder
   , testInsertOnlyDefaults
   , expectFail testUpsertOnlyDefaults
+  , testUpsertFromSelect
   ]
 
 data TestTableT f
@@ -121,3 +122,59 @@ testUpsertOnlyDefaults = testCase "upsert only default values" $
       [ WithDefaults 1 "unknown"
       , WithDefaults 2 "other"
       ]
+
+testUpsertFromSelect :: TestTree
+testUpsertFromSelect = testCase "upsert results of query" $
+  withTestDb $ \conn -> do
+    -- Create table.
+    execute_ conn "CREATE TABLE with_defaults (id INTEGER PRIMARY KEY, value TEXT NOT NULL DEFAULT \"unknown\")"
+
+    -- Insert test data.
+    initialTestData <- runBeamSqliteDebug putStrLn conn $ runInsertReturningList $
+      insertOnConflict (tblWithDefaults withDefaultsDb)
+        ( insertExpressions
+            [ WithDefaults 1 default_
+            , WithDefaults 2 (val_ "known")
+            ]
+        )
+        anyConflict
+        onConflictDoNothing
+    assertEqual "inserted initial values"
+      [ WithDefaults 1 "unknown"
+      , WithDefaults 2 "known"
+      ] initialTestData
+
+    -- Select all rows from table and insert them again.
+    inserted <- runBeamSqliteDebug putStrLn conn $ runInsertReturningList $
+      insertOnlyOnConflict (tblWithDefaults withDefaultsDb)
+      -- Only insert 'id' column.
+      _id
+      -- Insert from result of SELECT.
+      (insertFrom $ do
+        c <- orderBy_ (asc_ . _id)
+             (all_ (tblWithDefaults withDefaultsDb))
+        pure (_id c))
+      -- Only act when primary key conflicts.
+      (conflictingFields primaryKey)
+      -- Update conflicting fields of conflicting rows.
+      (onConflictUpdateSet
+        -- tbl is the old row, tblExcluded is the row proposed for insertion
+        (\tbl tblExcluded -> mconcat
+          [ _id    tbl <-. (_id    tblExcluded * 10)
+          -- column reference "value" is ambiguous
+          , _value tbl <-. concat_ [ (current_ . _value) tbl, " updated to ", _value tblExcluded ]
+          ]
+        )
+      )
+    assertEqual "inserted values"
+      [ WithDefaults 10 "unknown updated to unknown"
+      , WithDefaults 20 "known updated to unknown"
+      ] inserted
+
+    selected <- runBeamSqliteDebug putStrLn conn $ runSelectReturningList $ select $
+      orderBy_ (asc_ . _id) $
+      all_ (tblWithDefaults withDefaultsDb)
+    assertEqual "selected values"
+      [ WithDefaults 10 "unknown updated to unknown"
+      , WithDefaults 20 "known updated to unknown"
+      ] selected
