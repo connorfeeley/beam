@@ -418,12 +418,20 @@ runInsertReturningList (SqlInsert tblSettings insertStmt_@(SqliteInsertSyntax nm
            dropInsertTrigger =
              execute_ conn (Query ("DROP TRIGGER insert_trigger_" <> processId))
 
+           -- insertOnConflict can update rows, so also capture updates to the table.
+           createUpdateTrigger =
+             execute_ conn (Query ("CREATE TEMPORARY TRIGGER update_trigger_" <> processId <> " AFTER UPDATE ON " <> tableNameTxt <> " BEGIN " <>
+                                   "INSERT INTO inserted_values_" <> processId <> " SELECT * FROM " <> tableNameTxt <> " WHERE ROWID=new.rowid; END" ))
+           dropUpdateTrigger =
+             execute_ conn (Query ("DROP TRIGGER update_trigger_" <> processId))
+
 
        mask $ \restore -> do
          startSavepoint
          flip onException rollbackToSavepoint . restore $ do
            x <- bracket_ createInsertedValuesTable dropInsertedValuesTable $
-                bracket_ createInsertTrigger dropInsertTrigger $ do
+                bracket_ createInsertTrigger dropInsertTrigger $
+                bracket_ createUpdateTrigger dropUpdateTrigger $ do
                 runSqliteInsert logger conn insertStmt_
 
                 let columns = TL.toStrict $ TL.decodeUtf8 $
