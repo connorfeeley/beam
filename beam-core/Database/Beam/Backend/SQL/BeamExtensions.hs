@@ -38,6 +38,7 @@ import           Data.Functor.Const
 import           Data.Kind (Type)
 import           Data.Proxy
 import           Data.Semigroup
+import qualified Data.Text as T
 
 --import GHC.Generics
 
@@ -155,6 +156,15 @@ class BeamSqlBackend be => BeamHasInsertOnConflict be where
     :: Beamable table
     => DatabaseEntity be db (TableEntity table)
     -> SqlInsertValues be (table (QExpr be s))
+    -> SqlConflictTarget be table
+    -> SqlConflictAction be table
+    -> SqlInsert be table
+
+  insertOnlyOnConflict
+    :: (Beamable table, ProjectibleWithPredicate AnyType () T.Text (QExprToField r))
+    => DatabaseEntity be db (TableEntity table)
+    -> (table (QField s) -> QExprToField r)
+    -> SqlInsertValues be r
     -> SqlConflictTarget be table
     -> SqlConflictAction be table
     -> SqlInsert be table
