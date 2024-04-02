@@ -31,7 +31,8 @@ import           Database.Beam.Query ( SqlInsert(..), SqlInsertValues(..)
                                      , HasSqlQuantifiedEqualityCheck
                                      , DataType(..)
                                      , HasSqlInTable(..)
-                                     , insert, current_ )
+                                     , QExprToField
+                                     , insert, current_)
 import           Database.Beam.Query.Internal
 import           Database.Beam.Query.SQL92
 import           Database.Beam.Schema.Tables ( Beamable
@@ -473,6 +474,34 @@ instance Beam.BeamHasInsertOnConflict Sqlite where
              , emit " DO "
              , unSqliteConflictAction action tableFields
              ]
+
+  insertOnlyOnConflict
+    :: (Beamable table, ProjectibleWithPredicate AnyType () T.Text (QExprToField r))
+    => DatabaseEntity Sqlite db (TableEntity table)
+    -> (table (QField s) -> QExprToField r)
+    -> SqlInsertValues Sqlite r
+    -> Beam.SqlConflictTarget Sqlite table
+    -> Beam.SqlConflictAction Sqlite table
+    -> SqlInsert Sqlite table
+  -- insertOnlyOnConflict _ SqlInsertValuesEmpty _ _ _ = SqlInsertNoRows
+  insertOnlyOnConflict (DatabaseEntity dt) mkProj values target action = case values of
+    SqlInsertValuesEmpty -> SqlInsertNoRows
+    SqlInsertValues vs -> SqlInsert (dbTableSettings dt) $
+      let
+        tblSettings = dbTableSettings dt
+        tblQ = changeBeamRep (\(Columnar' f) -> Columnar' (QExpr (\_ -> fieldE (unqualifiedField (_fieldName f))))) tblSettings
+        tblFields = changeBeamRep (\(Columnar' f) -> Columnar' (QField True (dbTableCurrentName dt) (_fieldName f))) tblSettings
+        proj = execWriter (project' (Proxy @AnyType) (Proxy @((), T.Text))
+                                    (\_ _ f -> tell [f] >> pure f)
+                                    (mkProj tblFields))
+      in SqliteInsertSyntax (tableNameFromEntity dt) proj vs $ Just $
+           SqliteOnConflictSyntax $ mconcat
+             [ emit "ON CONFLICT "
+             , unSqliteConflictTarget target tblQ
+             , emit " DO "
+             , unSqliteConflictAction action tblFields
+             ]
+
 
   anyConflict = SqliteConflictTarget $ const mempty
   conflictingFields makeProjection = SqliteConflictTarget $ \table ->
