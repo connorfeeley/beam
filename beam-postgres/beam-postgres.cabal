@@ -76,6 +76,7 @@ test-suite beam-postgres-tests
   other-modules: Database.Beam.Postgres.Test,
                  Database.Beam.Postgres.Test.Marshal,
                  Database.Beam.Postgres.Test.Select,
+                 Database.Beam.Postgres.Test.Insert,
                  Database.Beam.Postgres.Test.DataTypes,
                  Database.Beam.Postgres.Test.Migrate
   build-depends:

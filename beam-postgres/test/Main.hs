@@ -4,6 +4,7 @@ import qualified Database.Postgres.Temp as TempDb
 import Test.Tasty
 
 import qualified Database.Beam.Postgres.Test.Select as Select
+import qualified Database.Beam.Postgres.Test.Insert as Insert
 import qualified Database.Beam.Postgres.Test.Marshal as Marshal
 import qualified Database.Beam.Postgres.Test.DataTypes as DataType
 import qualified Database.Beam.Postgres.Test.Migrate as Migrate
@@ -14,6 +15,7 @@ main = defaultMain $ withDb $ \getDb ->
   in testGroup "beam-postgres tests"
       [ Marshal.tests getConnStr
       , Select.tests getConnStr
+      , Insert.tests getConnStr
       , DataType.tests getConnStr
       , Migrate.tests getConnStr
       ]
