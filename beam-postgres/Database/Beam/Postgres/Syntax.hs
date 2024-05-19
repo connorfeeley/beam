@@ -1195,7 +1195,6 @@ DEFAULT_SQL_SYNTAX(TL.Text)
 DEFAULT_SQL_SYNTAX(Value)
 DEFAULT_SQL_SYNTAX(Pg.Oid)
 DEFAULT_SQL_SYNTAX(LocalTime)
-DEFAULT_SQL_SYNTAX(UTCTime)
 DEFAULT_SQL_SYNTAX(TimeOfDay)
 DEFAULT_SQL_SYNTAX(NominalDiffTime)
 DEFAULT_SQL_SYNTAX(Day)
@@ -1231,6 +1230,10 @@ instance HasSqlValueSyntax PgValueSyntax BL.ByteString where
 instance HasSqlValueSyntax PgValueSyntax UUID where
   sqlValueSyntax v = PgValueSyntax $
     emit "'" <> emit (toASCIIBytes v) <> emit "'::uuid"
+
+instance HasSqlValueSyntax PgValueSyntax UTCTime where
+  sqlValueSyntax v = PgValueSyntax $
+    (pgBuildAction . pure . Pg.toField) v <> emit "::timestamptz"
 
 instance Pg.ToField a => HasSqlValueSyntax PgValueSyntax (V.Vector a) where
   sqlValueSyntax = defaultPgValueSyntax
